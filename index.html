@@ -463,7 +463,7 @@ const DEFAULT_AGENCY = "Lyon";
 // (ex: "Lyon") pour générer une version verrouillée réservée à cette seule agence.
 const LOCKED_AGENCY = "Valence";
 // Passer à true pour activer les comptes à droits différenciés (maître / exploitation / prévention / pilote).
-const ROLE_ACCESS_ENABLED = false;
+const ROLE_ACCESS_ENABLED = true;
 // Chemin réseau (UNC) vers le fichier de l'outil, inséré dans les emails automatiques pour permettre
 // de l'ouvrir directement. Laisser à null pour ne rien ajouter.
 // Exemple : "\\\\pizzorno.priv\\Fichiers\\EXP_VALENCE\\Exploitation\\Systeme SQE\\PAA Sauvegarde Valence\\Plan d'actions Valence.html"
@@ -488,6 +488,7 @@ function toolLinkSuffix() {
 // fichier verrouillé sur une seule agence.
 const CLOSING_MESSAGE_OVERRIDES = {
   "Lyon": "Merci de mettre à jour vos actions sur l'outil (G:\\Data\\Systeme SQE\\PAA sauvegarde Lyon) ou de répondre à ce mail avec vos commentaires sous chaques actions",
+  "Valence": "Merci de faire la mise à jour de vos actions sur l'outil disponible ici \"https://jeromepiz.github.io/ValencePAA/\".",
 };
 function closingMessageFor(ag) { return CLOSING_MESSAGE_OVERRIDES[ag] || null; }
 const LS_CURRENT_AGENCY = "pa_current_agency";
@@ -4643,6 +4644,16 @@ function PlanActionApp() {
       showToast(e && e.message ? e.message : "Erreur lors du chargement en ligne");
     } finally { setGithubBusy(false); }
   };
+
+  // Sur un fichier verrouillé sur une agence (ex: outil déployé en ligne), si la sauvegarde en
+  // ligne est configurée, on charge automatiquement la dernière version au démarrage — pas
+  // besoin de cliquer sur "Charger" à chaque ouverture.
+  useEffect(() => {
+    if (LOCKED_AGENCY && githubConfig && githubConfig.appKey && githubConfig.workerUrl) {
+      loadOnline();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const createAction = (data) => {
     const avancement = data.avancement || 0;
