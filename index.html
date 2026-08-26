@@ -4612,7 +4612,7 @@ function PlanActionApp() {
 
   const githubShaRef = React.useRef(null);
   const saveOnline = async () => {
-    if (!githubConfig || !githubConfig.token) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
+    if (!githubConfig || !githubConfig.appKey || !githubConfig.workerUrl) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
     setGithubBusy(true);
     try {
       const payload = JSON.stringify({ actions: actionsRef.current, pilotes: pilotesRef.current, origines: originesRef.current, indicateurs: indicateursRef.current, axes: axesRef.current, savedAt: new Date().toISOString() }, null, 2);
@@ -4625,7 +4625,7 @@ function PlanActionApp() {
     } finally { setGithubBusy(false); }
   };
   const loadOnline = async () => {
-    if (!githubConfig || !githubConfig.token) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
+    if (!githubConfig || !githubConfig.appKey || !githubConfig.workerUrl) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
     setGithubBusy(true);
     try {
       const { content, sha } = await githubGetFile(githubConfig);
