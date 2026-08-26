@@ -529,18 +529,15 @@ function seedRolesFor(ag) {
     allowedPilotes: [],
   };
 }
-// Configuration de sauvegarde en ligne (GitHub) pré-remplie pour l'agence de Valence, afin que
-// l'outil soit utilisable en ligne sans configuration manuelle sur chaque appareil.
-// ATTENTION : ce fichier contenant un jeton d'accès en clair, ne le déposez que sur un dépôt/site
-// dont l'URL n'est pas partagée publiquement, ou remplacez ce jeton par le vôtre le cas échéant.
+// Configuration de sauvegarde en ligne pré-remplie pour l'agence de Valence, afin que l'outil
+// soit utilisable en ligne sans configuration manuelle sur chaque appareil. Passe par un relais
+// (Cloudflare Worker) : aucun vrai jeton GitHub n'est jamais présent dans ce fichier — seule une
+// clé d'application propre à ce relais y figure (voir worker_relais_github.js).
 function seedGithubConfigFor(ag) {
   if (ag === "Valence") {
     return {
-      owner: "jeromepiz",
-      repo: "paa-valence-data",
-      path: "sauvegarde_valence.json",
-      branch: "",
-      token: "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",
+      workerUrl: "https://paa-valence-relais.jerome-sauvebelle.workers.dev",
+      appKey: "Jeliemlo19132531%",
     };
   }
   return null;
@@ -1678,15 +1675,12 @@ function ParametresEmail({ emailConfig, onSave, showToast, unlocked, onUnlock })
 }
 
 function ParametresGitHub({ githubConfig, onSave, showToast, unlocked, onUnlock }) {
-  const [owner, setOwner] = useState((githubConfig && githubConfig.owner) || "");
-  const [repo, setRepo] = useState((githubConfig && githubConfig.repo) || "");
-  const [path, setPath] = useState((githubConfig && githubConfig.path) || "sauvegarde.json");
-  const [branch, setBranch] = useState((githubConfig && githubConfig.branch) || "");
-  const [token, setToken] = useState((githubConfig && githubConfig.token) || "");
+  const [workerUrl, setWorkerUrl] = useState((githubConfig && githubConfig.workerUrl) || "");
+  const [appKey, setAppKey] = useState((githubConfig && githubConfig.appKey) || "");
   const [pwd, setPwd] = useState("");
   const [testing, setTesting] = useState(false);
 
-  const configured = owner.trim() && repo.trim() && path.trim() && token.trim();
+  const configured = workerUrl.trim() && appKey.trim();
 
   if (!unlocked) {
     return (
@@ -1697,7 +1691,7 @@ function ParametresGitHub({ githubConfig, onSave, showToast, unlocked, onUnlock 
             <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 15, color: TEXT }}>Accès protégé</div>
           </div>
           <div style={{ fontSize: 13, color: TEXT_MUTE, marginBottom: 16, lineHeight: 1.5 }}>
-            Cette section contient un jeton d'accès sensible : elle est protégée par mot de passe.
+            Cette section est protégée par mot de passe.
           </div>
           <input
             type="password" value={pwd} onChange={(e) => setPwd(e.target.value)}
@@ -1716,15 +1710,15 @@ function ParametresGitHub({ githubConfig, onSave, showToast, unlocked, onUnlock 
   }
 
   const save = () => {
-    onSave({ owner: owner.trim(), repo: repo.trim(), path: path.trim(), branch: branch.trim(), token: token.trim() });
+    onSave({ workerUrl: workerUrl.trim(), appKey: appKey.trim() });
     showToast("Configuration enregistrée");
   };
   const runTest = async () => {
     if (!configured) return;
     setTesting(true);
     try {
-      await githubTestConnection({ owner: owner.trim(), repo: repo.trim(), token: token.trim() });
-      showToast("Connexion au dépôt réussie");
+      await githubTestConnection({ workerUrl: workerUrl.trim(), appKey: appKey.trim() });
+      showToast("Connexion au relais réussie");
     } catch (e) {
       showToast(e && e.message ? e.message : "Échec de la connexion");
     } finally { setTesting(false); }
@@ -1735,25 +1729,20 @@ function ParametresGitHub({ githubConfig, onSave, showToast, unlocked, onUnlock 
       <div style={{ background: CARD, border: "none", boxShadow: CARD_SHADOW, borderRadius: 12, padding: 24, marginBottom: 16 }}>
         <div style={{ fontSize: 13.5, color: TEXT, lineHeight: 1.6, marginBottom: 16 }}>
           Pour sauvegarder et recharger vos données depuis n'importe où (sans dépendre du réseau d'entreprise),
-          l'outil peut lire/écrire un fichier de sauvegarde dans un <b>dépôt GitHub privé</b> dédié, via son API.
+          l'outil passe par un petit relais (<b>Cloudflare Worker</b>) qui détient le vrai accès GitHub côté serveur.
+          Aucun jeton GitHub n'est jamais présent dans ce fichier — uniquement une clé d'application propre à ce relais.
           Ce mode s'ajoute au fichier réseau habituel, il ne le remplace pas.
         </div>
         <ol style={{ fontSize: 13, color: TEXT, lineHeight: 1.9, paddingLeft: 20, marginBottom: 20 }}>
-          <li>Créez un <b>dépôt GitHub privé</b> dédié à cette sauvegarde (jamais public : il contiendra des données de l'agence).</li>
-          <li>Dans <b>Settings → Developer settings → Fine-grained tokens</b>, créez un token limité à ce seul dépôt, avec la permission <b>Contents: Read and write</b>.</li>
-          <li>Renseignez ci-dessous le compte/organisation, le nom du dépôt, le chemin du fichier (ex. <code>sauvegarde_valence.json</code>) et le token.</li>
+          <li>Déployez le relais (fichier <code>worker_relais_github.js</code>) sur un compte Cloudflare Workers gratuit.</li>
+          <li>Renseignez-y votre token GitHub et vos informations de dépôt (variables d'environnement du Worker, jamais dans ce fichier).</li>
+          <li>Choisissez une clé d'application (une phrase longue et unique) et collez-la ci-dessous avec l'URL du Worker.</li>
         </ol>
 
-        <label style={labelStyle}>Compte ou organisation GitHub</label>
-        <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="ex. pizzorno-qse" style={{ ...inputStyle, width: "100%", marginBottom: 14 }} />
-        <label style={labelStyle}>Nom du dépôt (privé)</label>
-        <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="ex. paa-valence-data" style={{ ...inputStyle, width: "100%", marginBottom: 14 }} />
-        <label style={labelStyle}>Chemin du fichier dans le dépôt</label>
-        <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="sauvegarde_valence.json" style={{ ...inputStyle, width: "100%", marginBottom: 14 }} />
-        <label style={labelStyle}>Branche (facultatif, laisser vide pour la branche par défaut)</label>
-        <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" style={{ ...inputStyle, width: "100%", marginBottom: 14 }} />
-        <label style={labelStyle}>Token d'accès (fine-grained, droits « Contents: Read and write »)</label>
-        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="github_pat_..." style={{ ...inputStyle, width: "100%", marginBottom: 20 }} />
+        <label style={labelStyle}>URL du relais (Cloudflare Worker)</label>
+        <input value={workerUrl} onChange={(e) => setWorkerUrl(e.target.value)} placeholder="https://paa-valence-relais.votre-compte.workers.dev" style={{ ...inputStyle, width: "100%", marginBottom: 14 }} />
+        <label style={labelStyle}>Clé d'application</label>
+        <input type="password" value={appKey} onChange={(e) => setAppKey(e.target.value)} placeholder="votre clé d'application" style={{ ...inputStyle, width: "100%", marginBottom: 20 }} />
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={save} style={btnPrimary}><Icon name="check" size={14} color="#fff" /> Enregistrer la configuration</button>
@@ -1763,8 +1752,8 @@ function ParametresGitHub({ githubConfig, onSave, showToast, unlocked, onUnlock 
           {configured && <Badge color="#4F7942" soft>Configuré</Badge>}
         </div>
         <div style={{ fontSize: 11.5, color: TEXT_MUTE, marginTop: 14, lineHeight: 1.6 }}>
-          Le token reste stocké uniquement dans ce navigateur (jamais envoyé à Claude ni à Anthropic, ni intégré au fichier de l'outil).
-          Chaque personne qui utilise la sauvegarde en ligne doit renseigner son propre token une fois, dans son propre navigateur.
+          Cette configuration peut être intégrée directement au fichier par un administrateur (comme c'est le cas ici pour Valence),
+          car la clé d'application n'ouvre accès qu'à ce relais — jamais à votre compte GitHub. Le vrai jeton GitHub, lui, ne quitte jamais le Worker.
         </div>
       </div>
     </div>
@@ -3566,43 +3555,38 @@ function utf8ToB64(str) {
   bytes.forEach((b) => { bin += String.fromCharCode(b); });
   return btoa(bin);
 }
-function githubApiUrl(cfg) {
-  return "https://api.github.com/repos/" + encodeURIComponent(cfg.owner) + "/" + encodeURIComponent(cfg.repo) + "/contents/" + cfg.path.split("/").map(encodeURIComponent).join("/");
-}
+// La sauvegarde en ligne passe par un petit relais (Cloudflare Worker) qui détient le vrai
+// jeton GitHub côté serveur. Le navigateur ne connaît qu'une "clé d'application" (APP_KEY) qui
+// n'ouvre accès qu'à ce relais — jamais un vrai jeton GitHub, qui serait automatiquement révoqué
+// s'il était exposé dans ce fichier public (voir worker_relais_github.js pour le déploiement).
 async function githubGetFile(cfg) {
-  const res = await fetch(githubApiUrl(cfg) + "?t=" + Date.now(), {
-    headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json" },
+  const res = await fetch(cfg.workerUrl + (cfg.workerUrl.includes("?") ? "&" : "?") + "t=" + Date.now(), {
+    headers: { "X-App-Key": cfg.appKey },
   });
   if (res.status === 404) return { content: null, sha: null };
-  if (res.status === 401 || res.status === 403) throw new Error("Jeton d'accès invalide ou insuffisant (vérifiez le token et ses droits).");
-  if (!res.ok) throw new Error("Erreur GitHub (" + res.status + ")");
+  if (res.status === 401) throw new Error("Clé d'application invalide (vérifiez la configuration).");
+  if (!res.ok) throw new Error("Erreur du relais (" + res.status + ")");
   const data = await res.json();
+  if (!data || !data.content) return { content: null, sha: (data && data.sha) || null };
   const content = b64DecodeUtf8((data.content || "").replace(/\n/g, ""));
   return { content, sha: data.sha };
 }
 async function githubPutFile(cfg, contentStr, sha, message) {
-  const body = { message: message || "Mise à jour depuis l'outil Plan d'action", content: utf8ToB64(contentStr), branch: cfg.branch || undefined };
+  const body = { message: message || "Mise à jour depuis l'outil Plan d'action", content: utf8ToB64(contentStr) };
   if (sha) body.sha = sha;
-  const res = await fetch(githubApiUrl(cfg), {
+  const res = await fetch(cfg.workerUrl, {
     method: "PUT",
-    headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    headers: { "X-App-Key": cfg.appKey, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (res.status === 401 || res.status === 403) throw new Error("Jeton d'accès invalide ou insuffisant (vérifiez le token et ses droits).");
+  if (res.status === 401) throw new Error("Clé d'application invalide (vérifiez la configuration).");
   if (res.status === 409) throw new Error("Le fichier a été modifié entre-temps par quelqu'un d'autre : rechargez avant d'enregistrer.");
-  if (!res.ok) { const t = await res.text(); throw new Error("Erreur GitHub (" + res.status + ") : " + t.slice(0, 200)); }
+  if (!res.ok) { const t = await res.text(); throw new Error("Erreur du relais (" + res.status + ") : " + t.slice(0, 200)); }
   return await res.json();
 }
 async function githubTestConnection(cfg) {
-  const res = await fetch("https://api.github.com/repos/" + encodeURIComponent(cfg.owner) + "/" + encodeURIComponent(cfg.repo), {
-    headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json" },
-  });
-  if (res.status === 401 || res.status === 403) throw new Error("Jeton invalide ou droits insuffisants.");
-  if (res.status === 404) throw new Error("Dépôt introuvable (vérifiez le compte/organisation et le nom du dépôt, ou les droits du token).");
-  if (!res.ok) throw new Error("Erreur GitHub (" + res.status + ")");
-  const data = await res.json();
-  if (data.private === false) throw new Error("Attention : ce dépôt est public. Utilisez un dépôt privé pour vos données.");
-  return data;
+  const { sha } = await githubGetFile(cfg);
+  return { ok: true, existe: sha !== null };
 }
 
 const QUARTER_LABELS = { 1: "Janvier à Mars", 2: "Janvier à Juin", 3: "Janvier à Septembre", 4: "Janvier à Décembre" };
@@ -5014,14 +4998,14 @@ function PlanActionApp() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11.5, color: "#D7DCE2", fontWeight: 600 }}>En ligne (GitHub)</div>
-                  <div style={{ fontSize: 10, color: "#5C6675", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{githubConfig && githubConfig.token ? githubConfig.owner + "/" + githubConfig.repo : "Non configuré"}</div>
+                  <div style={{ fontSize: 10, color: "#5C6675", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{githubConfig && githubConfig.appKey ? "Relais configuré" : "Non configuré"}</div>
                 </div>
-                <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0, background: githubConfig && githubConfig.token ? "#4F7942" : "#5C6675" }} />
+                <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0, background: githubConfig && githubConfig.appKey ? "#4F7942" : "#5C6675" }} />
                 <Icon name={expandedConnector === "github" ? "chevronDown" : "chevronRight"} size={13} color="#5C6675" />
               </div>
               {expandedConnector === "github" && (
                 <div style={{ padding: "2px 8px 8px" }}>
-                  {githubConfig && githubConfig.token ? (
+                  {githubConfig && githubConfig.appKey ? (
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={saveOnline} disabled={githubBusy} title="Enregistrer en ligne" style={iconBtn}><Icon name="download" size={14} /></button>
                       <button onClick={loadOnline} disabled={githubBusy} title="Charger depuis la sauvegarde en ligne" style={iconBtn}><Icon name="upload" size={14} /></button>
