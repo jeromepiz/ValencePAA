@@ -120,6 +120,7 @@ const IDB_NAME = "planActionFileDB";
 const IDB_STORE = "handles";
 const IDB_KEY_FILE = "planFileHandle";
 const IDB_KEY_ATTACHMENTS_DIR = "planAttachmentsDirHandle";
+const IDB_KEY_ARCHIVE_DIR = "planArchiveDirHandle";
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -4311,6 +4312,9 @@ function PlanActionApp() {
   const [dirHandle, setDirHandle] = useState(null);
   const [dirName, setDirName] = useState(null);
   const [dirPermGranted, setDirPermGranted] = useState(false);
+  const [archiveDirHandle, setArchiveDirHandle] = useState(null);
+  const [archiveDirName, setArchiveDirName] = useState(null);
+  const [archiveDirPermGranted, setArchiveDirPermGranted] = useState(false);
   const [filePermGranted, setFilePermGranted] = useState(false);
   const [fsaBusy, setFsaBusy] = useState(false);
   const [expandedConnector, setExpandedConnector] = useState(null);
@@ -4386,6 +4390,10 @@ function PlanActionApp() {
     idbGetHandle(idbKey(IDB_KEY_ATTACHMENTS_DIR, ag)).then((h) => {
       if (h) { setDirHandle(h); setDirName(h.name); hasPermission(h, true).then(setDirPermGranted); }
       else { setDirHandle(null); setDirName(null); setDirPermGranted(false); }
+    }).catch(() => {});
+    idbGetHandle(idbKey(IDB_KEY_ARCHIVE_DIR, ag)).then((h) => {
+      if (h) { setArchiveDirHandle(h); setArchiveDirName(h.name); hasPermission(h, true).then(setArchiveDirPermGranted); }
+      else { setArchiveDirHandle(null); setArchiveDirName(null); setArchiveDirPermGranted(false); }
     }).catch(() => {});
   };
 
@@ -4546,6 +4554,55 @@ function PlanActionApp() {
     setDirHandle(null); setDirName(null); setDirPermGranted(false);
     showToast("Dossier des pièces jointes délié");
   };
+
+  const chooseArchiveFolder = async () => {
+    setFsaBusy(true);
+    try {
+      const handle = await withTimeout(window.showDirectoryPicker({ mode: "readwrite" }), 15000, FSA_BLOCKED_MESSAGE);
+      await idbSetHandle(idbKey(IDB_KEY_ARCHIVE_DIR, agencyRef.current), handle);
+      setArchiveDirHandle(handle);
+      setArchiveDirName(handle.name);
+      setArchiveDirPermGranted(true);
+      showToast("Dossier d'archive lié : " + handle.name);
+    } catch (e) {
+      if (e && e.name !== "AbortError") showToast(e && e.message === FSA_BLOCKED_MESSAGE ? FSA_BLOCKED_MESSAGE : "Impossible de lier le dossier");
+    } finally { setFsaBusy(false); }
+  };
+  const authorizeArchiveDir = async () => {
+    if (!archiveDirHandle) return;
+    setFsaBusy(true);
+    try {
+      const res = await withTimeout(archiveDirHandle.requestPermission({ mode: "readwrite" }), 15000, FSA_BLOCKED_MESSAGE);
+      setArchiveDirPermGranted(res === "granted");
+      showToast(res === "granted" ? "Accès au dossier d'archive autorisé" : "Accès refusé");
+    } catch (e) {
+      showToast(e && e.message ? e.message : "Impossible de demander l'autorisation");
+    } finally { setFsaBusy(false); }
+  };
+  const forgetArchiveFolder = async () => {
+    await idbClearHandle(idbKey(IDB_KEY_ARCHIVE_DIR, agencyRef.current));
+    setArchiveDirHandle(null); setArchiveDirName(null); setArchiveDirPermGranted(false);
+    showToast("Dossier d'archive délié");
+  };
+  // Écrit une nouvelle copie datée dans le dossier d'archive lié (jamais d'écrasement du
+  // fichier précédent). Ne fait rien silencieusement si le dossier n'est pas lié/autorisé —
+  // c'est un "bonus" quand le réseau d'entreprise est disponible, pas un pré-requis.
+  const writeArchiveCopy = async () => {
+    if (!archiveDirHandle) return { done: false, reason: "non lié" };
+    if (!(await hasPermission(archiveDirHandle, true))) return { done: false, reason: "accès non autorisé" };
+    try {
+      const now = new Date();
+      const stamp = now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate()) + "_" + pad2(now.getHours()) + "h" + pad2(now.getMinutes());
+      const name = "sauvegarde_" + agencyRef.current + "_" + stamp + ".json";
+      const handle = await archiveDirHandle.getFileHandle(name, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(JSON.stringify({ actions: actionsRef.current, pilotes: pilotesRef.current, origines: originesRef.current, indicateurs: indicateursRef.current, axes: axesRef.current, savedAt: now.toISOString() }, null, 2));
+      await writable.close();
+      return { done: true, name };
+    } catch (e) {
+      return { done: false, reason: e && e.message ? e.message : "erreur inconnue" };
+    }
+  };
   const addLocalFile = async (action, file) => {
     if (!dirHandle) { showToast("Liez d'abord un dossier de pièces jointes dans la barre latérale"); return; }
     if (!(await hasPermission(dirHandle, true))) { showToast("Cliquez d'abord sur « Autoriser l'accès » (barre latérale) avant d'importer un fichier"); return; }
@@ -4624,6 +4681,31 @@ function PlanActionApp() {
     } catch (e) {
       showToast(e && e.message ? e.message : "Erreur lors de l'enregistrement en ligne");
     } finally { setGithubBusy(false); }
+  };
+  // Enregistrement unique et prioritaire : envoie en ligne, ET crée en plus une archive locale
+  // datée si un dossier réseau est lié et accessible (silencieux si non disponible — ce n'est
+  // qu'un "bonus" quand on est connecté au réseau d'entreprise, jamais un blocage).
+  const saveEverywhere = async () => {
+    const hasOnline = githubConfig && githubConfig.appKey && githubConfig.workerUrl;
+    if (!hasOnline && !archiveDirHandle) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
+    setGithubBusy(true);
+    let onlineOk = false, onlineError = null;
+    if (hasOnline) {
+      try {
+        const payload = JSON.stringify({ actions: actionsRef.current, pilotes: pilotesRef.current, origines: originesRef.current, indicateurs: indicateursRef.current, axes: axesRef.current, savedAt: new Date().toISOString() }, null, 2);
+        const result = await githubPutFile(githubConfig, payload, githubShaRef.current, "Sauvegarde depuis l'outil — " + agencyRef.current);
+        githubShaRef.current = result.content ? result.content.sha : null;
+        onlineOk = true;
+      } catch (e) { onlineError = e && e.message ? e.message : "erreur inconnue"; }
+    }
+    const archive = await writeArchiveCopy();
+    setGithubBusy(false);
+    setDirtyMap((m) => ({ ...m, [agencyRef.current]: false }));
+
+    if (onlineOk && archive.done) showToast("Enregistré en ligne + archive locale créée (" + archive.name + ")");
+    else if (onlineOk) showToast("Enregistré en ligne" + (archiveDirHandle ? " — archive locale non créée (" + archive.reason + ")" : ""));
+    else if (archive.done) showToast("Archive locale créée (" + archive.name + ") — pas de sauvegarde en ligne : " + (onlineError || "non configurée"));
+    else showToast(onlineError || "Aucune sauvegarde effectuée — vérifiez la configuration");
   };
   const loadOnline = async () => {
     if (!githubConfig || !githubConfig.appKey || !githubConfig.workerUrl) { showToast("Configurez d'abord la sauvegarde en ligne (Réglages)"); return; }
@@ -4923,50 +5005,40 @@ function PlanActionApp() {
           )}
 
           {!FSA_SUPPORTED && (
-            <div style={{ fontSize: 10.5, color: "#5C6675", padding: "6px 4px 10px" }}>Chrome ou Edge requis pour lier un fichier.</div>
+            <div style={{ fontSize: 10.5, color: "#5C6675", padding: "6px 4px 10px" }}>Chrome ou Edge requis pour l'archive locale.</div>
           )}
 
-          {FSA_SUPPORTED && (
-            <div style={{ background: "#171E27", borderRadius: 12, padding: 4, marginBottom: 8 }}>
-              <div onClick={() => setExpandedConnector((c) => (c === "file" ? null : "file"))} className="connector-row" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 8px", borderRadius: 9, cursor: "pointer" }}>
-                <div style={{ width: 28, height: 28, borderRadius: 8, background: "#232C38", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Icon name="download" size={13} color="#B7BFC9" />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11.5, color: "#D7DCE2", fontWeight: 600 }}>Sauvegarde</div>
-                  <div style={{ fontSize: 10, color: "#5C6675", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{fileHandle ? fileName : "Non liée"}</div>
-                </div>
-                <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0, background: !fileHandle ? "#5C6675" : filePermGranted ? "#4F7942" : "#D98C2B" }} />
-                <Icon name={expandedConnector === "file" ? "chevronDown" : "chevronRight"} size={13} color="#5C6675" />
-              </div>
-              {expandedConnector === "file" && (
-                <div style={{ padding: "2px 8px 8px" }}>
-                  {fileHandle ? (
-                    !filePermGranted ? (
-                      <button onClick={authorizeFile} disabled={fsaBusy} style={{ ...compactBtn, background: "#4A3200", color: "#FFD98A", width: "100%", justifyContent: "center" }}>
-                        <Icon name="check" size={12} /> {fsaBusy ? "En attente..." : "Autoriser l'accès"}
-                      </button>
-                    ) : (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={saveToFile} disabled={fileBusy || fsaBusy} title="Enregistrer" style={iconBtn}><Icon name="download" size={14} /></button>
-                        <button onClick={loadFromFile} disabled={fileBusy || fsaBusy} title="Charger depuis le fichier" style={iconBtn}><Icon name="upload" size={14} /></button>
-                        <button onClick={forgetFile} title="Changer de fichier" style={iconBtn}><Icon name="x" size={14} /></button>
-                      </div>
-                    )
-                  ) : (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={chooseExistingFile} disabled={fsaBusy} title="Sélectionner un fichier de sauvegarde existant" style={{ ...compactBtn, flex: 1, justifyContent: "center" }}>
-                        <Icon name="upload" size={12} /> Ouvrir
-                      </button>
-                      <button onClick={createNewFile} disabled={fsaBusy} title="Créer un nouveau fichier dans un dossier" style={{ ...compactBtn, flex: 1, justifyContent: "center" }}>
-                        <Icon name="folder" size={12} /> Créer
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+          <div style={{ background: "#171E27", borderRadius: 12, padding: 12, marginBottom: 8 }}>
+            <div style={{ fontSize: 10.5, color: "#8892A0", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 9 }}>Sauvegarde</div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              <button onClick={saveEverywhere} disabled={githubBusy || fsaBusy} title="Enregistre en ligne, et crée une archive locale datée si le dossier réseau est lié" style={{ ...compactBtn, flex: 1, justifyContent: "center", background: NAVY, color: "#fff", border: "none", opacity: (githubBusy || fsaBusy) ? 0.6 : 1 }}>
+                <Icon name="download" size={13} color="#fff" /> {githubBusy ? "..." : "Enregistrer"}
+              </button>
+              <button onClick={loadOnline} disabled={githubBusy || fsaBusy} title="Charger la dernière sauvegarde en ligne" style={{ ...compactBtn, flex: 1, justifyContent: "center", opacity: (githubBusy || fsaBusy) ? 0.6 : 1 }}>
+                <Icon name="upload" size={13} /> Charger
+              </button>
             </div>
-          )}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "#8892A0", marginBottom: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 99, flexShrink: 0, background: githubConfig && githubConfig.appKey ? "#4F7942" : "#5C6675" }} />
+              <span style={{ flex: 1 }}>En ligne : {githubConfig && githubConfig.appKey ? "configuré" : "non configuré"}</span>
+              {isMaitre && <button onClick={() => setTab("github")} style={{ background: "none", border: "none", color: "#5C6675", fontSize: 10, cursor: "pointer", textDecoration: "underline", padding: 0 }}>régler</button>}
+            </div>
+
+            {FSA_SUPPORTED && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "#8892A0" }}>
+                <span style={{ width: 6, height: 6, borderRadius: 99, flexShrink: 0, background: !archiveDirHandle ? "#5C6675" : archiveDirPermGranted ? "#4F7942" : "#D98C2B" }} />
+                <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Archive réseau : {!archiveDirHandle ? "non liée" : archiveDirName}</span>
+                {!archiveDirHandle ? (
+                  <button onClick={chooseArchiveFolder} disabled={fsaBusy} style={{ background: "none", border: "none", color: "#5C6675", fontSize: 10, cursor: "pointer", textDecoration: "underline", padding: 0, flexShrink: 0 }}>lier</button>
+                ) : !archiveDirPermGranted ? (
+                  <button onClick={authorizeArchiveDir} disabled={fsaBusy} style={{ background: "none", border: "none", color: "#D98C2B", fontSize: 10, cursor: "pointer", textDecoration: "underline", padding: 0, flexShrink: 0 }}>autoriser</button>
+                ) : (
+                  <button onClick={forgetArchiveFolder} style={{ background: "none", border: "none", color: "#5C6675", fontSize: 10, cursor: "pointer", textDecoration: "underline", padding: 0, flexShrink: 0 }}>changer</button>
+                )}
+              </div>
+            )}
+          </div>
 
           {FSA_SUPPORTED && (
             <div style={{ background: "#171E27", borderRadius: 12, padding: 4, marginBottom: 10 }}>
@@ -5003,39 +5075,15 @@ function PlanActionApp() {
             </div>
           )}
 
-          {isMaitre && (
-            <div style={{ background: "#171E27", borderRadius: 12, padding: 4, marginBottom: 10 }}>
-              <div onClick={() => setExpandedConnector((c) => (c === "github" ? null : "github"))} className="connector-row" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 8px", borderRadius: 9, cursor: "pointer" }}>
-                <div style={{ width: 28, height: 28, borderRadius: 8, background: "#232C38", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Icon name="link" size={13} color="#B7BFC9" />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11.5, color: "#D7DCE2", fontWeight: 600 }}>En ligne (GitHub)</div>
-                  <div style={{ fontSize: 10, color: "#5C6675", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{githubConfig && githubConfig.appKey ? "Relais configuré" : "Non configuré"}</div>
-                </div>
-                <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0, background: githubConfig && githubConfig.appKey ? "#4F7942" : "#5C6675" }} />
-                <Icon name={expandedConnector === "github" ? "chevronDown" : "chevronRight"} size={13} color="#5C6675" />
-              </div>
-              {expandedConnector === "github" && (
-                <div style={{ padding: "2px 8px 8px" }}>
-                  {githubConfig && githubConfig.appKey ? (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={saveOnline} disabled={githubBusy} title="Enregistrer en ligne" style={iconBtn}><Icon name="download" size={14} /></button>
-                      <button onClick={loadOnline} disabled={githubBusy} title="Charger depuis la sauvegarde en ligne" style={iconBtn}><Icon name="upload" size={14} /></button>
-                      <button onClick={() => setTab("github")} title="Modifier la configuration" style={iconBtn}><Icon name="settings" size={14} /></button>
-                    </div>
-                  ) : (
-                    <button onClick={() => setTab("github")} style={{ ...compactBtn, width: "100%", justifyContent: "center" }}>
-                      <Icon name="settings" size={12} /> Configurer
-                    </button>
-                  )}
-                  {githubBusy && <div style={{ fontSize: 10, color: "#8892A0", marginTop: 6 }}>En cours...</div>}
-                </div>
-              )}
+          {FSA_SUPPORTED && (
+            <div style={{ padding: "0 2px 4px" }}>
+              <button onClick={chooseExistingFile} disabled={fsaBusy} title="Ouvrir un fichier de sauvegarde local (.json) en cas de problème avec la sauvegarde en ligne" style={{ background: "none", border: "none", color: "#4A5462", fontSize: 9.5, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+                Charger une archive locale (dépannage)
+              </button>
             </div>
           )}
 
-          <div style={{ fontSize: 10, color: "#5C6675", display: "flex", alignItems: "center", gap: 5, padding: "0 4px 12px" }}>
+          <div style={{ fontSize: 10, color: "#5C6675", display: "flex", alignItems: "center", gap: 5, padding: "8px 4px 12px" }}>
             <Icon name="users" size={10} color="#5C6675" /> {pilotes.length} pilote(s) enregistré(s)
           </div>
         </div>
@@ -5091,8 +5139,24 @@ function PlanActionApp() {
         {appMode === "indicateurs" && tab === "gestion-axes" && <GestionAxes axes={axes} indicateurs={indicateurs} onUpdateAxes={persistAxes} showToast={showToast} />}
       </div>
 
+      {dirtyMap[agency] && (
+        <div style={{
+          position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 900,
+          background: "#3A2A00", borderTop: "1px solid #6B4A00", padding: "10px 20px",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 14, flexWrap: "wrap",
+          boxShadow: "0 -4px 16px rgba(0,0,0,0.15)",
+        }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, color: "#FFD98A", fontFamily: "'Inter', sans-serif" }}>
+            <Icon name="alert" size={14} color="#FFD98A" /> Modifications non enregistrées
+          </span>
+          <button onClick={saveEverywhere} disabled={githubBusy} style={{ ...btnPrimary, padding: "7px 16px", opacity: githubBusy ? 0.6 : 1 }}>
+            <Icon name="check" size={13} color="#fff" /> {githubBusy ? "Enregistrement..." : "Enregistrer maintenant"}
+          </button>
+        </div>
+      )}
+
       {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: INK, color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, fontFamily: "'Inter', sans-serif", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>
+        <div style={{ position: "fixed", bottom: dirtyMap[agency] ? 66 : 24, left: "50%", transform: "translateX(-50%)", background: INK, color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, fontFamily: "'Inter', sans-serif", boxShadow: "0 8px 24px rgba(0,0,0,0.25)", zIndex: 950 }}>
           {toast}
         </div>
       )}
