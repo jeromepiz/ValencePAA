@@ -901,6 +901,12 @@ function ActionCard({ action, onUpdate, onComment, onClose, onReopen, onDelete, 
         <div style={{ padding: "0 16px 18px 46px", borderTop: `1px solid ${LINE}` }}>
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap", margin: "14px 0" }}>
             <div style={{ flex: "1 1 200px", minWidth: 200 }}>
+              <div style={labelStyle}>Domaine</div>
+              <select value={action.domaine} onChange={(e) => onUpdate(action.id, { domaine: e.target.value })} style={{ ...inputStyle, width: "100%" }}>
+                {DOMAINES.map((d) => <option key={d.key} value={d.key}>{d.key}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: "1 1 200px", minWidth: 200 }}>
               <div style={labelStyle}>Pilote</div>
               <select
                 value={action.pilote || ""}
